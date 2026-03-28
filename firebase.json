@@ -1,0 +1,31 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": [
+    {
+      "bucket": "todo-app-flutter-4851a.firebasestorage.app",
+      "rules": "storage.rules"
+    }
+  ],
+  "emulators": {
+    "auth": {
+      "host": "localhost",
+      "port": 9099
+    },
+    "firestore": {
+      "host": "localhost",
+      "port": 8080
+    },
+    "storage": {
+      "host": "localhost",
+      "port": 9199
+    },
+    "ui": {
+      "enabled": true,
+      "host": "localhost",
+      "port": 4000
+    }
+  }
+}

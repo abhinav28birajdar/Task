@@ -1,180 +1,228 @@
-import 'package:flutter/foundation.dart';
-import '../services/supabase_service.dart';
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../data/models/note_model.dart';
 
-/// Note Provider for managing notes state using Supabase
-/// Version: 2.0.0 (September 8, 2025)
 class NoteProvider extends ChangeNotifier {
-  final SupabaseService _supabaseService = SupabaseService();
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  StreamSubscription? _noteSubscription;
 
-  List<Map<String, dynamic>> _notes = [];
+  List<NoteModel> _notes = [];
   bool _isLoading = false;
   String? _error;
 
-  // Getters
-  List<Map<String, dynamic>> get notes => _notes;
+  String _filterColor = 'all';
+  String _searchQuery = '';
+  bool _showArchived = false;
+
+  List<NoteModel> get notes => _notes;
   bool get isLoading => _isLoading;
   String? get error => _error;
+  String get filterColor => _filterColor;
+  String get searchQuery => _searchQuery;
+  bool get showArchived => _showArchived;
 
-  // Get filtered notes
-  List<Map<String, dynamic>> getFilteredNotes({
-    bool? isFavorite,
-    bool? isPinned,
-    String? categoryId,
-    List<String>? tags,
-  }) {
-    return _notes.where((note) {
-      if (isFavorite != null && note['is_favorite'] != isFavorite) {
-        return false;
-      }
-      if (isPinned != null && note['is_pinned'] != isPinned) {
-        return false;
-      }
-      if (categoryId != null && note['category_id'] != categoryId) {
-        return false;
-      }
-      if (tags != null && tags.isNotEmpty) {
-        final noteTags = List<String>.from(note['tags'] ?? []);
-        if (!tags.any((tag) => noteTags.contains(tag))) {
-          return false;
-        }
+  /// Get filtered and sorted notes
+  List<NoteModel> get filteredNotes {
+    var filtered = _notes.where((note) {
+      if (!_showArchived && note.isArchived) return false;
+      if (note.deletedAt != null) return false; // Skip soft-deleted
+      if (_filterColor != 'all' && note.color != _filterColor) return false;
+      if (_searchQuery.isNotEmpty) {
+        final query = _searchQuery.toLowerCase();
+        return (note.title?.toLowerCase().contains(query) ?? false) ||
+            note.content.toLowerCase().contains(query) ||
+            note.tags.any((tag) => tag.toLowerCase().contains(query));
       }
       return true;
     }).toList();
+
+    // Sort: pinned first, then by date
+    filtered.sort((a, b) {
+      if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
+      return b.updatedAt.compareTo(a.updatedAt);
+    });
+
+    return filtered;
   }
 
-  // Load notes from Supabase
-  Future<void> loadNotes() async {
+  int get totalNotes => _notes.length;
+  int get archivedCount => _notes.where((n) => n.isArchived).length;
+
+  /// Start listening to notes
+  void startListening(String userId) {
+    _noteSubscription?.cancel();
     _isLoading = true;
     _error = null;
     notifyListeners();
 
-    try {
-      _notes = await _supabaseService.getNotes();
-      _error = null;
-    } catch (e) {
-      _error = e.toString();
-      _notes = [];
-    } finally {
-      _isLoading = false;
-      notifyListeners();
-    }
+    _noteSubscription = _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('notes')
+        .orderBy('updatedAt', descending: true)
+        .snapshots()
+        .listen(
+      (snapshot) {
+        _notes =
+            snapshot.docs.map((doc) => NoteModel.fromJson(doc.data())).toList();
+        _isLoading = false;
+        _error = null;
+        notifyListeners();
+      },
+      onError: (error) {
+        _isLoading = false;
+        _error = error.toString();
+        notifyListeners();
+      },
+    );
   }
 
-  // Search notes
-  Future<List<Map<String, dynamic>>> searchNotes(String query) async {
-    try {
-      return await _supabaseService.searchNotes(query);
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return [];
-    }
-  }
-
-  // Create a new note
-  Future<bool> createNote({
-    required String title,
-    String? content,
-    String contentType = 'text',
-    bool isFavorite = false,
-    bool isPinned = false,
-    List<String>? tags,
-    String? categoryId,
-    String folderPath = '/',
+  /// Create new note
+  Future<void> createNote({
+    required String userId,
+    required String content,
+    String? title,
+    String color = 'yellow',
+    List<String> tags = const [],
   }) async {
     try {
-      final newNote = await _supabaseService.createNote(
+      final note = NoteModel(
+        id: _firestore.collection('notes').doc().id,
+        userId: userId,
         title: title,
         content: content,
-        contentType: contentType,
-        isFavorite: isFavorite,
-        isPinned: isPinned,
+        color: color,
         tags: tags,
-        categoryId: categoryId,
-        folderPath: folderPath,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
       );
 
-      _notes.insert(0, newNote);
-      notifyListeners();
-      return true;
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('notes')
+          .doc(note.id)
+          .set(note.toJson());
     } catch (e) {
-      _error = e.toString();
+      _error = 'Failed to create note: $e';
       notifyListeners();
-      return false;
+      rethrow;
     }
   }
 
-  // Update an existing note
-  Future<bool> updateNote({
+  /// Update note
+  Future<void> updateNote({
+    required String userId,
     required String noteId,
     String? title,
     String? content,
-    bool? isFavorite,
-    bool? isPinned,
+    String? color,
     List<String>? tags,
-    String? categoryId,
+    bool? isPinned,
+    bool? isArchived,
   }) async {
     try {
-      // For now, we'll implement a basic update
-      // In a real implementation, you'd add updateNote to SupabaseService
-      final index = _notes.indexWhere((note) => note['id'] == noteId);
-      if (index != -1) {
-        final note = Map<String, dynamic>.from(_notes[index]);
-        if (title != null) note['title'] = title;
-        if (content != null) note['content'] = content;
-        if (isFavorite != null) note['is_favorite'] = isFavorite;
-        if (isPinned != null) note['is_pinned'] = isPinned;
-        if (tags != null) note['tags'] = tags;
-        if (categoryId != null) note['category_id'] = categoryId;
-        note['updated_at'] = DateTime.now().toIso8601String();
-
-        _notes[index] = note;
-        notifyListeners();
-      }
-      return true;
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('notes')
+          .doc(noteId)
+          .update({
+        if (title != null) 'title': title,
+        if (content != null) 'content': content,
+        if (color != null) 'color': color,
+        if (tags != null) 'tags': tags,
+        if (isPinned != null) 'isPinned': isPinned,
+        if (isArchived != null) 'isArchived': isArchived,
+        'updatedAt': DateTime.now(),
+      });
     } catch (e) {
-      _error = e.toString();
+      _error = 'Failed to update note: $e';
       notifyListeners();
-      return false;
+      rethrow;
     }
   }
 
-  // Toggle note favorite
-  Future<bool> toggleNoteFavorite(String noteId) async {
-    final note = _notes.firstWhere((n) => n['id'] == noteId);
-    return await updateNote(
-      noteId: noteId,
-      isFavorite: !note['is_favorite'],
-    );
-  }
-
-  // Toggle note pinned
-  Future<bool> toggleNotePinned(String noteId) async {
-    final note = _notes.firstWhere((n) => n['id'] == noteId);
-    return await updateNote(
-      noteId: noteId,
-      isPinned: !note['is_pinned'],
-    );
-  }
-
-  // Delete a note
-  Future<bool> deleteNote(String noteId) async {
+  /// Delete note (soft delete)
+  Future<void> deleteNote(String userId, String noteId) async {
     try {
-      // For now, we'll implement a basic delete
-      // In a real implementation, you'd add deleteNote to SupabaseService
-      _notes.removeWhere((note) => note['id'] == noteId);
-      notifyListeners();
-      return true;
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('notes')
+          .doc(noteId)
+          .update({
+        'deletedAt': DateTime.now(),
+        'updatedAt': DateTime.now(),
+      });
     } catch (e) {
-      _error = e.toString();
+      _error = 'Failed to delete note: $e';
       notifyListeners();
-      return false;
+      rethrow;
     }
   }
 
-  // Clear error
-  void clearError() {
-    _error = null;
+  /// Toggle pin
+  Future<void> togglePin(String userId, String noteId, bool isPinned) async {
+    try {
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('notes')
+          .doc(noteId)
+          .update({
+        'isPinned': !isPinned,
+        'updatedAt': DateTime.now(),
+      });
+    } catch (e) {
+      _error = 'Failed to update pin status: $e';
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  /// Toggle archive
+  Future<void> toggleArchive(
+      String userId, String noteId, bool isArchived) async {
+    try {
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('notes')
+          .doc(noteId)
+          .update({
+        'isArchived': !isArchived,
+        'updatedAt': DateTime.now(),
+      });
+    } catch (e) {
+      _error = 'Failed to update archive status: $e';
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  /// Set color filter
+  void setColorFilter(String color) {
+    _filterColor = color;
     notifyListeners();
+  }
+
+  /// Set search query
+  void setSearchQuery(String query) {
+    _searchQuery = query;
+    notifyListeners();
+  }
+
+  /// Toggle show archived
+  void toggleShowArchived() {
+    _showArchived = !_showArchived;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _noteSubscription?.cancel();
+    super.dispose();
   }
 }

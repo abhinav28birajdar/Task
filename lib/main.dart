@@ -1,549 +1,142 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+import 'package:timezone/data/latest_all.dart' as tz;
+import 'package:flutter_localizations/flutter_localizations.dart';
 
-import 'config/supabase_config.dart';
-import 'models/category.dart';
-import 'models/todo.dart';
-import 'models/icon_data_adapter.dart';
-import 'providers/hybrid_task_provider.dart';
-import 'providers/hybrid_category_provider.dart';
-import 'providers/note_provider.dart';
-import 'providers/settings_provider.dart';
-import 'screens/main_navigation_screen.dart';
-import 'screens/auth_screen.dart';
-import 'screens/alarm_management_screen.dart';
-import 'screens/supabase_connection_tester.dart'; // Added the connection tester
-import 'services/supabase_service.dart';
-import 'services/notification_service.dart';
-import 'services/firebase_notification_service.dart';
-import 'services/theme_service.dart';
-import 'services/auth_service.dart';
 import 'firebase_options.dart';
+import 'services/notification_service.dart';
+import 'services/alarm_service.dart';
+import 'services/local_storage_service.dart';
+import 'services/offline_sync_service.dart';
+import 'providers/theme_provider.dart';
+import 'providers/auth_provider.dart';
+import 'providers/task_provider.dart';
+import 'providers/user_provider.dart';
+import 'providers/notification_provider.dart';
+import 'providers/note_provider.dart';
+import 'providers/analytics_provider.dart';
+import 'services/sync_service.dart';
+import 'core/theme/app_theme.dart';
+import 'core/routes/app_router.dart';
 
-// Background message handler - must be at top level (outside any class)
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  debugPrint('📱 Background message received: ${message.messageId}');
-}
-
-void main() async {
-  // Ensure Flutter is initialized
-  WidgetsFlutterBinding.ensureInitialized();
-
+Future<void> main() async {
   try {
-    debugPrint('Starting application initialization...');
+    WidgetsFlutterBinding.ensureInitialized();
+    debugPrint('🚀 Starting application...');
 
-    // Initialize Facebook SDK early to avoid plugin registration errors
-    if (Platform.isAndroid) {
-      try {
-        const MethodChannel('flutter_facebook_auth')
-            .invokeMethod('initializeSDK');
-        debugPrint('Facebook SDK initialization requested');
-      } catch (e) {
-        debugPrint('Facebook SDK initialization error (non-critical): $e');
-      }
-    }
+    debugPrint('🔥 Initializing Firebase...');
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    FirebaseFirestore.instance.settings =
+        const Settings(persistenceEnabled: true);
+    debugPrint('✅ Firebase initialized');
 
-    // Load environment variables first
-    try {
-      await dotenv.load(fileName: ".env");
-      debugPrint('Environment variables loaded successfully');
-    } catch (e) {
-      debugPrint('⚠️ Failed to load .env file: $e');
-      // Continue anyway, we have fallback values in config
-    }
+    debugPrint('🔔 Initializing Notifications...');
+    await NotificationService.instance.initialize();
+    debugPrint('✅ Notifications initialized');
 
-    // Initialize Hive for local storage
-    try {
-      await Hive.initFlutter();
-      debugPrint('Hive initialized successfully');
+    debugPrint('⏰ Initializing Alarm Service...');
+    await AlarmService.instance.initialize();
+    debugPrint('✅ Alarm Service initialized');
 
-      // Register Hive adapters
-      if (!Hive.isAdapterRegistered(CategoryAdapter().typeId)) {
-        Hive.registerAdapter(CategoryAdapter());
-      }
-      if (!Hive.isAdapterRegistered(TodoAdapter().typeId)) {
-        Hive.registerAdapter(TodoAdapter());
-      }
-      if (!Hive.isAdapterRegistered(IconDataAdapter().typeId)) {
-        Hive.registerAdapter(IconDataAdapter());
-      }
-      debugPrint('Hive adapters registered successfully');
-    } catch (e) {
-      debugPrint('❌ Hive initialization failed: $e');
-      throw Exception('Failed to initialize local storage: $e');
-    }
+    tz.initializeTimeZones();
+    await AndroidAlarmManager.initialize();
 
-    // Initialize SharedPreferences
-    SharedPreferences prefs;
-    try {
-      prefs = await SharedPreferences.getInstance();
-      debugPrint('SharedPreferences initialized successfully');
-    } catch (e) {
-      debugPrint('❌ SharedPreferences initialization failed: $e');
-      throw Exception('Failed to initialize app settings: $e');
-    }
+    debugPrint('💾 Initializing SharedPreferences...');
+    final prefs = await SharedPreferences.getInstance();
+    debugPrint('✅ SharedPreferences initialized');
 
-    // Initialize Notification Service
-    NotificationService notificationService;
-    try {
-      notificationService = NotificationService.instance;
-      await notificationService.initializeNotifications();
-      debugPrint('Local notifications initialized successfully');
-    } catch (e) {
-      debugPrint('❌ Local notification initialization failed: $e');
-      throw Exception('Failed to initialize notifications: $e');
-    }
+    debugPrint('📦 Initializing Local Storage...');
+    final localStorage = LocalStorageService();
+    await localStorage.initialize();
+    debugPrint('✅ Local Storage initialized');
 
-    // Try to initialize Firebase (optional)
-    try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
+    debugPrint('🔄 Initializing Offline Sync Service...');
+    final offlineSync = OfflineSyncService();
+    await offlineSync.initialize(
+      onConnectivityChanged: (isOnline) {
+        if (isOnline) {
+          debugPrint('📡 Back online! Syncing pending changes...');
+        } else {
+          debugPrint('📵 Offline mode - changes will sync when online');
+        }
+      },
+    );
+    debugPrint('✅ Offline Sync Service initialized');
 
-      // Set background message handler for Firebase
-      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-      debugPrint('Firebase Core initialized successfully');
-
-      // Initialize Firebase Notification Service
-      try {
-        await FirebaseNotificationService.instance.initialize();
-        debugPrint('Firebase Notification Service initialized successfully');
-      } catch (e) {
-        debugPrint(
-            '⚠️ Firebase Notification Service initialization failed: $e');
-        // Continue without Firebase notifications - not critical
-      }
-    } catch (e) {
-      debugPrint('⚠️ Firebase initialization failed: $e');
-      // Continue without Firebase - not critical for app functionality
-    }
-
-    // Check network connectivity before initializing Supabase
-    bool supabaseInitialized = false;
-    try {
-      // Simple connectivity check by trying to ping a reliable host
-      final result = await InternetAddress.lookup('google.com');
-      if (result.isEmpty || result[0].rawAddress.isEmpty) {
-        throw Exception('No internet connection available');
-      }
-      debugPrint('Network connectivity check successful');
-
-      // Initialize Supabase
-      await SupabaseService.initialize(
-        url: SupabaseConfig.supabaseUrl,
-        anonKey: SupabaseConfig.supabaseAnonKey,
-      );
-      debugPrint('Supabase initialized successfully');
-      supabaseInitialized = true;
-    } catch (e) {
-      debugPrint('❌ Supabase initialization failed: $e');
-      // Don't throw an exception here, just track that we're in offline mode
-      supabaseInitialized = false;
-    }
-
-    // Create and initialize providers
-    HybridCategoryProvider categoryProvider;
-    HybridTaskProvider taskProvider;
-
-    try {
-      categoryProvider = HybridCategoryProvider();
-      taskProvider = HybridTaskProvider();
-      final themeService = ThemeService();
-
-      // Initialize providers
-      await categoryProvider.initialize();
-      await taskProvider.initialize();
-      debugPrint('Providers initialized successfully');
-
-      runApp(MyApp(
-        prefs: prefs,
-        categoryProvider: categoryProvider,
-        taskProvider: taskProvider,
-        notificationService: notificationService,
-        themeService: themeService,
-        supabaseInitialized: supabaseInitialized,
-      ));
-
-      debugPrint('App initialization completed successfully');
-    } catch (e) {
-      debugPrint('❌ Provider initialization failed: $e');
-      throw Exception('Failed to initialize data providers: $e');
-    }
-  } catch (e) {
-    debugPrint('❌ CRITICAL ERROR during app initialization: $e');
-    // Run a minimal error app that displays the error
-    runApp(ErrorApp(errorMessage: e.toString()));
-  }
-}
-
-class MyApp extends StatelessWidget {
-  final SharedPreferences prefs;
-  final HybridCategoryProvider categoryProvider;
-  final HybridTaskProvider taskProvider;
-  final NotificationService notificationService;
-  final ThemeService themeService;
-  final bool supabaseInitialized;
-
-  const MyApp({
-    super.key,
-    required this.prefs,
-    required this.categoryProvider,
-    required this.taskProvider,
-    required this.notificationService,
-    required this.themeService,
-    required this.supabaseInitialized,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        Provider<SupabaseService>(create: (_) => SupabaseService()),
-        Provider<NotificationService>.value(value: notificationService),
-        Provider<FirebaseNotificationService>.value(
-          value: FirebaseNotificationService.instance,
-        ),
-        ChangeNotifierProvider(create: (_) => AuthService()),
-        ChangeNotifierProvider.value(value: themeService),
-        ChangeNotifierProvider(create: (_) => SettingsProvider(prefs)),
-        ChangeNotifierProvider.value(value: categoryProvider),
-        ChangeNotifierProvider.value(value: taskProvider),
-        ChangeNotifierProvider(create: (_) => NoteProvider()),
-        Provider<bool>.value(value: supabaseInitialized),
-      ],
-      child: Consumer<ThemeService>(
-        builder: (context, themeService, child) {
-          return MaterialApp(
-            title: 'Pro Organizer',
-            theme: ThemeService.lightTheme,
-            darkTheme: ThemeService.darkTheme,
-            themeMode: themeService.themeMode,
-            home: supabaseInitialized 
-                ? const AuthWrapper() 
-                : const SupabaseConnectionTester(),
-            debugShowCheckedModeBanner: false,
-            routes: {
-              '/alarm-management': (context) => const AlarmManagementScreen(),
-              '/connection-test': (context) => const SupabaseConnectionTester(),
-            },
-            builder: (context, widget) {
-              // Handle potential errors in the widget tree
-              ErrorWidget.builder = (FlutterErrorDetails errorDetails) {
-                return _buildErrorWidget(errorDetails);
-              };
-              return widget!;
-            },
-          );
-        },
+    runApp(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => ThemeProvider(prefs)),
+          ChangeNotifierProvider(create: (_) => AuthProvider()),
+          ChangeNotifierProvider(create: (_) => TaskProvider()),
+          ChangeNotifierProvider(create: (_) => UserProvider()),
+          ChangeNotifierProvider(create: (_) => NotificationProvider(prefs)),
+          ChangeNotifierProvider(create: (_) => NoteProvider()),
+          ChangeNotifierProvider(create: (_) => AnalyticsProvider()),
+          ChangeNotifierProvider(create: (_) => SyncService()),
+        ],
+        child: const TaskApp(),
       ),
     );
-  }
-
-  Widget _buildErrorWidget(FlutterErrorDetails errorDetails) {
-    return Scaffold(
-      backgroundColor: Colors.red[50],
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.error_outline,
-                size: 64,
-                color: Colors.red,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Oops! Something went wrong',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.red,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'We encountered an unexpected error. Please restart the app.',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.red[700],
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ErrorApp extends StatelessWidget {
-  final String? errorMessage;
-
-  const ErrorApp({super.key, this.errorMessage});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Pro Organizer',
-      theme: ThemeService.lightTheme,
+  } catch (e, stackTrace) {
+    debugPrint('❌ Initialization Error: $e');
+    debugPrint(stackTrace.toString());
+    // Run a basic error app if initialization fails
+    runApp(MaterialApp(
       home: Scaffold(
-        backgroundColor: Colors.red[50],
         body: Center(
           child: Padding(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.all(24.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(
-                  Icons.error_outline,
-                  size: 64,
-                  color: Colors.red,
-                ),
+                const Icon(Icons.error_outline, color: Colors.red, size: 64),
                 const SizedBox(height: 16),
                 const Text(
-                  'Initialization Failed',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.red,
-                  ),
-                  textAlign: TextAlign.center,
+                  'Failed to initialize app',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  'Failed to initialize the app. Please check your configuration and try again.',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    color: Colors.black87,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                if (errorMessage != null) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.red.shade300),
-                    ),
-                    child: Text(
-                      'Error details: $errorMessage',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.red[800],
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ],
+                Text(e.toString(), textAlign: TextAlign.center),
                 const SizedBox(height: 24),
                 ElevatedButton(
-                  onPressed: () {
-                    Navigator.of(context).push(MaterialPageRoute(
-                      builder: (context) => const SupabaseConnectionTester(),
-                    ));
-                  },
-                  child: const Text('Test Supabase Connection'),
+                  onPressed: () => main(),
+                  child: const Text('Retry'),
                 ),
               ],
             ),
           ),
         ),
       ),
-    );
+    ));
   }
 }
 
-class AuthWrapper extends StatefulWidget {
-  const AuthWrapper({super.key});
-
-  @override
-  State<AuthWrapper> createState() => _AuthWrapperState();
-}
-
-class _AuthWrapperState extends State<AuthWrapper> {
-  bool _isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkAuthState();
-  }
-
-  Future<void> _checkAuthState() async {
-    // Show splash screen for a brief moment
-    await Future.delayed(const Duration(milliseconds: 1500));
-
-    try {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Auth check error: $e');
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
-    }
-  }
+class TaskApp extends StatelessWidget {
+  const TaskApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Get the Supabase connection status
-    final bool supabaseInitialized = Provider.of<bool>(context);
-    
-    if (!supabaseInitialized) {
-      return Scaffold(
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.cloud_off,
-                size: 64,
-                color: Colors.orange,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Offline Mode',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Unable to connect to the cloud. Using local storage only.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pushNamed(context, '/connection-test');
-                },
-                child: const Text('Test Connection'),
-              ),
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(
-                      builder: (context) => const MainNavigationScreen(),
-                    ),
-                  );
-                },
-                child: const Text('Continue in Offline Mode'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    if (_isLoading) {
-      return const SplashScreen();
-    }
-
-    return Consumer3<AuthService, HybridTaskProvider, HybridCategoryProvider>(
-      builder: (context, authService, taskProvider, categoryProvider, child) {
-        return StreamBuilder<AuthState>(
-          stream: Supabase.instance.client.auth.onAuthStateChange,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const SplashScreen();
-            }
-
-            final session = snapshot.data?.session;
-
-            if (session != null) {
-              // User is authenticated - enable cloud sync
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                taskProvider.enableCloudSync();
-                categoryProvider.enableCloudSync();
-              });
-              return const MainNavigationScreen();
-            } else {
-              // User is not authenticated - disable cloud sync
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                taskProvider.disableCloudSync();
-                categoryProvider.disableCloudSync();
-              });
-              return const AuthScreen();
-            }
-          },
-        );
-      },
-    );
-  }
-}
-
-class SplashScreen extends StatelessWidget {
-  const SplashScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // App logo/icon
-            Icon(
-              Icons.check_circle_outline,
-              size: 100,
-              color: theme.colorScheme.primary,
-            ),
-            const SizedBox(height: 24),
-
-            // App name
-            Text(
-              'Pro Organizer',
-              style: theme.textTheme.headlineLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-
-            const SizedBox(height: 8),
-            Text(
-              'Your Ultimate Task & Note Manager',
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: theme.colorScheme.onBackground.withOpacity(0.7),
-              ),
-            ),
-
-            const SizedBox(height: 48),
-
-            // Loading indicator
-            CircularProgressIndicator(
-              color: theme.colorScheme.primary,
-              strokeWidth: 3,
-            ),
-          ],
-        ),
-      ),
+    final themeProvider = context.watch<ThemeProvider>();
+    return MaterialApp.router(
+      title: 'Task',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: themeProvider.themeMode,
+      routerConfig: AppRouter.router,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [Locale('en', 'US')],
     );
   }
 }

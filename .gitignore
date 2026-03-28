@@ -43,3 +43,50 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Google Services Files (Firebase configuration)
+**/google-services.json
+**/GoogleService-Info.plist
+**/ios/Runner/GoogleService-Info.plist
+**/android/app/google-services.json
+
+# Firebase configuration
+firebase.json
+.firebaserc
+
+# API Keys and Secrets
+*.pem
+*.key
+*.p12
+*.p8
+.env
+.env.local
+.env.*.local
+
+# iOS/macOS generated files
+ios/Pods/
+ios/Podfile.lock
+macos/Pods/
+macos/Podfile.lock
+*.xcworkspace/
+*.xcodeproj/
+
+# Build outputs
+*.apk
+*.ipa
+*.aab
+build/
+dist/
+
+# Logs
+logs/
+*.log
+
+# Local environment
+.DS_Store
+Thumbs.db
+
+# Generated files
+.coverage
+coverage/
+*.lcov

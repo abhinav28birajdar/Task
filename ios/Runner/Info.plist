@@ -45,5 +45,18 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Task needs camera access to update your profile photo.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Task needs photo library access to select your profile photo.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Task needs to save photos to your library.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Task uses Face ID to protect your account.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+	    <string>fetch</string>
+	    <string>remote-notification</string>
+	</array>
 </dict>
 </plist>

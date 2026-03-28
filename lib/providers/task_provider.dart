@@ -1,444 +1,263 @@
-import 'package:flutter/foundation.dart';
-import '../services/supabase_service.dart';
-import '../models/todo.dart';
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../data/models/task_model.dart';
+import '../services/notification_service.dart';
+import '../services/alarm_service.dart';
 
-/// Task Provider for managing task state using Supabase
-/// Version: 2.0.0 (September 8, 2025)
 class TaskProvider extends ChangeNotifier {
-  final SupabaseService _supabaseService = SupabaseService();
-
-  List<Map<String, dynamic>> _tasks = [];
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  StreamSubscription? _taskSubscription;
+  List<TaskModel> _tasks = [];
   bool _isLoading = false;
-  String? _error;
-  String _searchQuery = '';
-  String _filterOption = 'all';
-  String _sortOrder = 'creation_date_desc';
-  String? _selectedCategoryId;
 
-  // Getters
-  List<Map<String, dynamic>> get tasks => _tasks;
+  String _filterCategory = 'all';
+  String _filterPriority = 'all';
+  String _filterStatus = 'all';
+  String _filterQuery = '';
 
-  List<Todo> get todos {
-    List<Map<String, dynamic>> filteredTasks = List.from(_tasks);
+  String get filterCategory => _filterCategory;
+  String get filterPriority => _filterPriority;
+  String get filterStatus => _filterStatus;
+  String get filterQuery => _filterQuery;
 
-    // Apply search filter
-    if (_searchQuery.isNotEmpty) {
-      filteredTasks = filteredTasks.where((task) {
-        final title = task['title']?.toString().toLowerCase() ?? '';
-        final description = task['description']?.toString().toLowerCase() ?? '';
-        final query = _searchQuery.toLowerCase();
-        return title.contains(query) || description.contains(query);
-      }).toList();
-    }
-
-    // Apply category filter
-    if (_selectedCategoryId != null) {
-      filteredTasks = filteredTasks.where((task) {
-        return task['category_id'] == _selectedCategoryId;
-      }).toList();
-    }
-
-    // Apply status filter
-    switch (_filterOption) {
-      case 'active':
-        filteredTasks = filteredTasks
-            .where((task) => !(task['is_completed'] ?? false))
-            .toList();
-        break;
-      case 'completed':
-        filteredTasks = filteredTasks
-            .where((task) => task['is_completed'] ?? false)
-            .toList();
-        break;
-      case 'overdue':
-        final now = DateTime.now();
-        filteredTasks = filteredTasks.where((task) {
-          final dueDate = task['due_date'];
-          if (dueDate == null) return false;
-          final due = DateTime.tryParse(dueDate.toString());
-          return due != null &&
-              due.isBefore(now) &&
-              !(task['is_completed'] ?? false);
-        }).toList();
-        break;
-      case 'today':
-        final today = DateTime.now();
-        final startOfDay = DateTime(today.year, today.month, today.day);
-        final endOfDay = startOfDay.add(const Duration(days: 1));
-        filteredTasks = filteredTasks.where((task) {
-          final dueDate = task['due_date'];
-          if (dueDate == null) return false;
-          final due = DateTime.tryParse(dueDate.toString());
-          return due != null &&
-              due.isAfter(startOfDay) &&
-              due.isBefore(endOfDay) &&
-              !(task['is_completed'] ?? false);
-        }).toList();
-        break;
-      // 'all' - no additional filtering
-    }
-
-    // Apply sorting
-    filteredTasks.sort((a, b) {
-      switch (_sortOrder) {
-        case 'title_asc':
-          return (a['title'] ?? '')
-              .toString()
-              .compareTo((b['title'] ?? '').toString());
-        case 'title_desc':
-          return (b['title'] ?? '')
-              .toString()
-              .compareTo((a['title'] ?? '').toString());
-        case 'due_date_asc':
-          final aDate = a['due_date'] != null
-              ? DateTime.tryParse(a['due_date'].toString())
-              : null;
-          final bDate = b['due_date'] != null
-              ? DateTime.tryParse(b['due_date'].toString())
-              : null;
-          if (aDate == null && bDate == null) return 0;
-          if (aDate == null) return 1;
-          if (bDate == null) return -1;
-          return aDate.compareTo(bDate);
-        case 'due_date_desc':
-          final aDate = a['due_date'] != null
-              ? DateTime.tryParse(a['due_date'].toString())
-              : null;
-          final bDate = b['due_date'] != null
-              ? DateTime.tryParse(b['due_date'].toString())
-              : null;
-          if (aDate == null && bDate == null) return 0;
-          if (aDate == null) return 1;
-          if (bDate == null) return -1;
-          return bDate.compareTo(aDate);
-        case 'priority_asc':
-          return (a['priority'] ?? 2).compareTo(b['priority'] ?? 2);
-        case 'priority_desc':
-          return (b['priority'] ?? 2).compareTo(a['priority'] ?? 2);
-        case 'creation_date_desc':
-        default:
-          final aDate = a['created_at'] != null
-              ? DateTime.tryParse(a['created_at'].toString())
-              : DateTime.now();
-          final bDate = b['created_at'] != null
-              ? DateTime.tryParse(b['created_at'].toString())
-              : DateTime.now();
-          return bDate!.compareTo(aDate!);
-      }
-    });
-
-    return filteredTasks.map((task) => taskToTodo(task)).toList();
-  }
-
-  List<Todo> get allTodos => _tasks
-      .map((task) => taskToTodo(task))
-      .toList(); // Alias for compatibility
+  List<TaskModel> get tasks => _tasks;
   bool get isLoading => _isLoading;
-  String? get error => _error;
-  String get searchQuery => _searchQuery;
-  String get filterOption => _filterOption;
-  String get sortOrder => _sortOrder;
-  String? get selectedCategoryId => _selectedCategoryId;
-  String? get errorMessage => _error;
 
-  // Count getters for compatibility
-  int get totalTodos => _tasks.length;
-  int get activeTodos =>
-      _tasks.where((task) => !(task['is_completed'] ?? false)).length;
-  int get completedTodos =>
-      _tasks.where((task) => task['is_completed'] ?? false).length;
-  int get overdueTodos {
-    final now = DateTime.now();
-    return _tasks.where((task) {
-      final dueDate = task['due_date'];
-      if (dueDate == null) return false;
-      final due = DateTime.tryParse(dueDate.toString());
-      return due != null &&
-          due.isBefore(now) &&
-          !(task['is_completed'] ?? false);
-    }).length;
-  }
-
-  int get dueTodayTodos {
-    final today = DateTime.now();
-    final startOfDay = DateTime(today.year, today.month, today.day);
-    final endOfDay = startOfDay.add(const Duration(days: 1));
-
-    return _tasks.where((task) {
-      final dueDate = task['due_date'];
-      if (dueDate == null) return false;
-      final due = DateTime.tryParse(dueDate.toString());
-      return due != null &&
-          due.isAfter(startOfDay) &&
-          due.isBefore(endOfDay) &&
-          !(task['is_completed'] ?? false);
-    }).length;
-  }
-
-  // Get tasks with filters
-  List<Map<String, dynamic>> getFilteredTasks({
-    bool? isCompleted,
-    String? categoryId,
-    int? priority,
-  }) {
-    return _tasks.where((task) {
-      if (isCompleted != null && task['is_completed'] != isCompleted) {
-        return false;
-      }
-      if (categoryId != null && task['category_id'] != categoryId) {
-        return false;
-      }
-      if (priority != null && task['priority'] != priority) {
-        return false;
-      }
-      return true;
+  List<TaskModel> get filteredTasks {
+    return _tasks.where((t) {
+      final catMatch =
+          _filterCategory == 'all' || t.category == _filterCategory;
+      final priMatch =
+          _filterPriority == 'all' || t.priority == _filterPriority;
+      final statMatch = _filterStatus == 'all' ||
+          (_filterStatus == 'completed' && t.isCompleted) ||
+          (_filterStatus == 'pending' && !t.isCompleted);
+      final qMatch = _filterQuery.isEmpty ||
+          t.title.toLowerCase().contains(_filterQuery) ||
+          t.description.toLowerCase().contains(_filterQuery);
+      return catMatch && priMatch && statMatch && qMatch;
     }).toList();
   }
 
-  // Load tasks from Supabase
-  Future<void> loadTasks() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
+  List<TaskModel> get starredTasks {
+    return _tasks.where((t) => t.isStarred).toList();
+  }
 
-    try {
-      _tasks = await _supabaseService.getTasks();
-      _error = null;
-    } catch (e) {
-      _error = e.toString();
-      _tasks = [];
-    } finally {
+  int get totalCount => _tasks.length;
+  int get completedCount => _tasks.where((t) => t.isCompleted).length;
+  int get pendingCount => _tasks.where((t) => !t.isCompleted).length;
+  int get overdueCount => _tasks
+      .where((t) =>
+          !t.isCompleted &&
+          t.dueDate != null &&
+          t.dueDate!.isBefore(DateTime.now()))
+      .length;
+
+  int currentStreak(String uid) {
+    if (_tasks.isEmpty) return 0;
+    final sortedCompletions = _tasks
+        .where((t) => t.isCompleted)
+        .map((t) =>
+            DateTime(t.updatedAt.year, t.updatedAt.month, t.updatedAt.day))
+        .toSet()
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    if (sortedCompletions.isEmpty) return 0;
+
+    int streak = 0;
+    DateTime currentDay =
+        DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+
+    if (sortedCompletions.first
+        .isBefore(currentDay.subtract(const Duration(days: 1)))) {
+      return 0; // Streak broken
+    }
+
+    for (var i = 0; i < sortedCompletions.length; i++) {
+      if (i == 0) {
+        if (sortedCompletions[i] == currentDay ||
+            sortedCompletions[i] ==
+                currentDay.subtract(const Duration(days: 1))) {
+          streak++;
+          currentDay = sortedCompletions[i];
+        }
+      } else {
+        if (sortedCompletions[i] ==
+            currentDay.subtract(const Duration(days: 1))) {
+          streak++;
+          currentDay = sortedCompletions[i];
+        } else {
+          break;
+        }
+      }
+    }
+    return streak;
+  }
+
+  void startListening(String uid) {
+    _taskSubscription?.cancel();
+    _isLoading = true;
+    notifyListeners();
+    _taskSubscription = _db
+        .collection('tasks')
+        .where('uid', isEqualTo: uid)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snap) {
+      _tasks = snap.docs.map((d) => TaskModel.fromMap(d.data())).toList();
       _isLoading = false;
       notifyListeners();
-    }
+    });
   }
 
-  // Create a new task
-  Future<bool> createTask({
-    required String title,
-    String? description,
-    DateTime? dueDate,
-    DateTime? notificationTime,
-    int priority = 2,
-    String? categoryId,
-    List<String>? tags,
-    String? location,
-  }) async {
-    try {
-      final newTask = await _supabaseService.createTask(
-        title: title,
-        description: description,
-        dueDate: dueDate,
-        notificationTime: notificationTime,
-        priority: priority,
-        categoryId: categoryId,
-        tags: tags,
-        location: location,
-      );
+  void stopListening() => _taskSubscription?.cancel();
 
-      _tasks.insert(0, newTask);
-      notifyListeners();
-      return true;
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return false;
-    }
-  }
+  Future<void> addTask(TaskModel task) async {
+    final doc = _db.collection('tasks').doc();
+    final newTask = task.copyWith(
+        id: doc.id, createdAt: DateTime.now(), updatedAt: DateTime.now());
+    await doc.set(newTask.toMap());
 
-  // Update an existing task
-  Future<bool> updateTask({
-    required String taskId,
-    String? title,
-    String? description,
-    bool? isCompleted,
-    DateTime? dueDate,
-    DateTime? notificationTime,
-    int? priority,
-    String? categoryId,
-    List<String>? tags,
-    String? location,
-  }) async {
-    try {
-      final updatedTask = await _supabaseService.updateTask(
-        taskId: taskId,
-        title: title,
-        description: description,
-        isCompleted: isCompleted,
-        dueDate: dueDate,
-        notificationTime: notificationTime,
-        priority: priority,
-        categoryId: categoryId,
-        tags: tags,
-        location: location,
-      );
-
-      final index = _tasks.indexWhere((task) => task['id'] == taskId);
-      if (index != -1) {
-        _tasks[index] = updatedTask;
-        notifyListeners();
-      }
-      return true;
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return false;
-    }
-  }
-
-  // Toggle task completion
-  Future<bool> toggleTaskCompletion(String taskId) async {
-    final task = _tasks.firstWhere((t) => t['id'] == taskId);
-    return await updateTask(
-      taskId: taskId,
-      isCompleted: !task['is_completed'],
-    );
-  }
-
-  // Delete a task
-  Future<bool> deleteTask(String taskId) async {
-    try {
-      await _supabaseService.deleteTask(taskId);
-      _tasks.removeWhere((task) => task['id'] == taskId);
-      notifyListeners();
-      return true;
-    } catch (e) {
-      _error = e.toString();
-      notifyListeners();
-      return false;
-    }
-  }
-
-  // Clear error
-  void clearError() {
-    _error = null;
-    notifyListeners();
-  }
-
-  // Additional methods for compatibility with TodoProvider interface
-
-  /// Set search query
-  void setSearchQuery(String query) {
-    _searchQuery = query;
-    notifyListeners();
-  }
-
-  /// Set filter option
-  void setFilterOption(String filter) {
-    _filterOption = filter;
-    notifyListeners();
-  }
-
-  /// Set sort order
-  void setSortOrder(String order) {
-    _sortOrder = order;
-    notifyListeners();
-  }
-
-  /// Set category filter
-  void setCategoryFilter(String? categoryId) {
-    _selectedCategoryId = categoryId;
-    notifyListeners();
-  }
-
-  /// Clear all filters
-  void clearFilters() {
-    _searchQuery = '';
-    _filterOption = 'all';
-    _selectedCategoryId = null;
-    notifyListeners();
-  }
-
-  /// Convert task to todo for compatibility
-  Todo taskToTodo(Map<String, dynamic> task) {
-    return Todo(
-      id: task['id'] ?? '',
-      title: task['title'] ?? '',
-      description: task['description'] ?? '',
-      isCompleted: task['is_completed'] ?? false,
-      creationDate: task['created_at'] != null
-          ? DateTime.tryParse(task['created_at'].toString()) ?? DateTime.now()
-          : DateTime.now(),
-      dueDate: task['due_date'] != null
-          ? DateTime.tryParse(task['due_date'].toString())
-          : null,
-      priority: task['priority'] ?? 2,
-      categoryId: task['category_id'],
-      tags: [],
-      hasNotification: false,
-      notificationTime: null,
-      completionDate: task['is_completed'] == true ? DateTime.now() : null,
-      notes: task['description'] ?? '',
-    );
-  }
-
-  /// Toggle todo status (alias for updateTask)
-  Future<void> toggleTodoStatus(Todo todo) async {
-    final isCompleted = !todo.isCompleted;
-    await updateTask(
-      taskId: todo.id,
-      isCompleted: isCompleted,
-    );
-  }
-
-  /// Delete todo (alias for deleteTask)
-  Future<void> deleteTodo(String todoId) async {
-    await deleteTask(todoId);
-  }
-
-  /// Fetch tasks (alias for loadTasks)
-  Future<void> fetchTasks() async {
-    await loadTasks();
-  }
-
-  /// Add task method for compatibility
-  Future<void> addTodo(Todo todo) async {
-    await createTask(
-      title: todo.title,
-      description: todo.description,
-      dueDate: todo.dueDate,
-      priority: todo.priority,
-      categoryId: todo.categoryId,
-    );
-    // Reload tasks after adding
-    await loadTasks();
-  }
-
-  /// Update todo method for compatibility
-  Future<void> updateTodo(Todo todo) async {
-    await updateTask(
-      taskId: todo.id,
-      title: todo.title,
-      description: todo.description,
-      dueDate: todo.dueDate,
-      priority: todo.priority,
-      categoryId: todo.categoryId,
-      isCompleted: todo.isCompleted,
-    );
-  }
-
-  /// Delete completed tasks
-  Future<void> deleteCompletedTasks() async {
-    final completedTasks =
-        _tasks.where((task) => task['is_completed'] == true).toList();
-    for (final task in completedTasks) {
-      await deleteTask(task['id']);
-    }
-  }
-
-  /// Mark all tasks as completed
-  Future<void> markAllAsCompleted() async {
-    for (final task in _tasks) {
-      if (task['is_completed'] != true) {
-        await updateTask(taskId: task['id'], isCompleted: true);
+    if (newTask.reminder && newTask.dueDate != null) {
+      final reminderTime = newTask.dueDate!
+          .subtract(Duration(minutes: newTask.reminderMinutesBefore ?? 10));
+      if (reminderTime.isAfter(DateTime.now())) {
+        final alarmId = doc.id.hashCode.abs();
+        await NotificationService.instance.scheduleTaskReminder(
+          id: alarmId,
+          taskId: doc.id,
+          title: '⏰ ${newTask.title}',
+          body: 'Due at ${newTask.dueTime ?? "soon"}',
+          scheduledTime: reminderTime,
+          useAlarmSound: newTask.alarmEnabled,
+        );
+        if (newTask.alarmEnabled) {
+          await AlarmService.instance.setAlarm(
+            alarmId: alarmId,
+            alarmTime: reminderTime,
+            taskId: doc.id,
+          );
+        }
+        await doc.update({'alarmId': alarmId});
       }
     }
   }
 
-  /// Get todos by category (compatibility method)
-  List<Todo> getTodosByCategory(String categoryId) {
-    final filteredTasks =
-        _tasks.where((task) => task['category_id'] == categoryId).toList();
-    return filteredTasks.map((task) => taskToTodo(task)).toList();
+  Future<void> updateTask(TaskModel task) async {
+    if (task.alarmId != null) {
+      await NotificationService.instance.cancelNotification(task.alarmId!);
+      await AlarmService.instance.cancelAlarm(task.alarmId!);
+    }
+
+    await _db
+        .collection('tasks')
+        .doc(task.id)
+        .update(task.copyWith(updatedAt: DateTime.now()).toMap());
+
+    if (task.reminder && task.dueDate != null) {
+      final reminderTime = task.dueDate!
+          .subtract(Duration(minutes: task.reminderMinutesBefore ?? 10));
+      if (reminderTime.isAfter(DateTime.now())) {
+        final alarmId = task.id.hashCode.abs();
+        await NotificationService.instance.scheduleTaskReminder(
+          id: alarmId,
+          taskId: task.id,
+          title: '⏰ ${task.title}',
+          body: 'Due at ${task.dueTime ?? "soon"}',
+          scheduledTime: reminderTime,
+          useAlarmSound: task.alarmEnabled,
+        );
+        if (task.alarmEnabled) {
+          await AlarmService.instance.setAlarm(
+              alarmId: alarmId, alarmTime: reminderTime, taskId: task.id);
+        }
+        await _db.collection('tasks').doc(task.id).update({'alarmId': alarmId});
+      }
+    }
+  }
+
+  Future<void> deleteTask(TaskModel task) async {
+    if (task.alarmId != null) {
+      await NotificationService.instance.cancelNotification(task.alarmId!);
+      await AlarmService.instance.cancelAlarm(task.alarmId!);
+    }
+    await _db.collection('tasks').doc(task.id).delete();
+  }
+
+  Future<void> clearAllTasks(String uid) async {
+    for (final t in _tasks) {
+      if (t.alarmId != null) {
+        await NotificationService.instance.cancelNotification(t.alarmId!);
+        await AlarmService.instance.cancelAlarm(t.alarmId!);
+      }
+      await _db.collection('tasks').doc(t.id).delete();
+    }
+  }
+
+  Future<void> toggleTask(String taskId, bool isCompleted) async {
+    await _db.collection('tasks').doc(taskId).update({
+      'isCompleted': isCompleted,
+      'updatedAt': Timestamp.now(),
+    });
+    HapticFeedback.lightImpact();
+  }
+
+  Future<void> toggleStarred(String taskId, bool isStarred) async {
+    await _db.collection('tasks').doc(taskId).update({
+      'isStarred': isStarred,
+      'updatedAt': Timestamp.now(),
+    });
+    HapticFeedback.lightImpact();
+  }
+
+  Future<void> toggleSubTask(String taskId, String subTaskId, bool val) async {
+    final taskIndex = _tasks.indexWhere((t) => t.id == taskId);
+    if (taskIndex == -1) return;
+    final updatedSubTasks = _tasks[taskIndex]
+        .subTasks
+        .map((s) => s.id == subTaskId ? s.copyWith(isCompleted: val) : s)
+        .toList();
+    await _db.collection('tasks').doc(taskId).update({
+      'subTasks': updatedSubTasks.map((s) => s.toMap()).toList(),
+      'updatedAt': Timestamp.now(),
+    });
+  }
+
+  List<TaskModel> searchTasks(String query) {
+    final q = query.toLowerCase();
+    return _tasks
+        .where((t) =>
+            t.title.toLowerCase().contains(q) ||
+            t.description.toLowerCase().contains(q))
+        .toList();
+  }
+
+  void setFilterCategory(String cat) {
+    _filterCategory = cat;
+    notifyListeners();
+  }
+
+  void setFilterPriority(String p) {
+    _filterPriority = p;
+    notifyListeners();
+  }
+
+  void setFilterStatus(String s) {
+    _filterStatus = s;
+    notifyListeners();
+  }
+
+  void setFilterQuery(String q) {
+    _filterQuery = q.toLowerCase();
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _taskSubscription?.cancel();
+    super.dispose();
   }
 }
