@@ -62,6 +62,7 @@ firebase.json
 .env
 .env.local
 .env.*.local
+.supabase_schema.sql
 
 # iOS/macOS generated files
 ios/Pods/

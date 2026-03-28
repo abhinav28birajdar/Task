@@ -1,7 +1,7 @@
 # 🚀 Pro-Organizer - Real-Time Todo Application
 
 <p align="center">
-  <img src="web/icons/Icon-512.png" alt="Pro-Organizer Logo" width="128" height="128">
+  <img src="assets/logo1.png" alt="Pro-Organizer Logo" width="128" height="128">
 </p>
 
 <p align="center">
