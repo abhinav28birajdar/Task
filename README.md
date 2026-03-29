@@ -14,6 +14,8 @@
   <img src="https://img.shields.io/badge/Supabase-Real--time-green.svg?style=flat&logo=supabase" alt="Supabase">
   <img src="https://img.shields.io/badge/Theme-Dark%20%2F%20Light-purple.svg?style=flat" alt="Theme">
 </p>
+---
+https://github.com/user-attachments/assets/c5e954e9-b52e-43dd-a013-4359cb359a4e
 
 ---
 
