@@ -17,7 +17,7 @@
 ---
 
 
-## 🎥 Mitra AI Demo
+## 🎥 Task Demo
 
 https://github.com/user-attachments/assets/c5e954e9-b52e-43dd-a013-4359cb359a4e
 
